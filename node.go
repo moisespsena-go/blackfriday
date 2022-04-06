@@ -3,6 +3,8 @@ package blackfriday
 import (
 	"bytes"
 	"fmt"
+
+	"github.com/russross/blackfriday/v2/table_header"
 )
 
 // NodeType specifies a type of a single node of a syntax tree. Usually one
@@ -96,10 +98,32 @@ type CodeBlockData struct {
 	FenceOffset int
 }
 
+type TableDataBorder struct {
+	Left, Rigth, Top, Bottom, Column, Row bool
+}
+
+// TableData contains fields relevant to a TableCell node type.
+type TableData struct {
+	Header *table_header.TableHeader
+	Border TableDataBorder
+	Opts   map[string]interface{}
+}
+
 // TableCellData contains fields relevant to a TableCell node type.
 type TableCellData struct {
-	IsHeader bool           // This tells if it's under the header row
+	IsHeader bool // This tells if it's under the header row
+	IsLast   bool
+	Index    int
 	Align    CellAlignFlags // This holds the value for align attribute
+	Rowspan,
+	Colspan int
+	Opts map[string]interface{}
+}
+
+// TableRowData contains fields relevant to a TableRow node type.
+type TableRowData struct {
+	Index  int
+	IsLast bool
 }
 
 // HeadingData contains fields relevant to a Heading node type.
@@ -107,6 +131,7 @@ type HeadingData struct {
 	Level        int    // This holds the heading level number
 	HeadingID    string // This might hold heading ID, if present
 	IsTitleblock bool   // Specifies whether it's a title block
+	Config       []byte // Specifies whether it's a unnumerd
 }
 
 // Node is a single element in the abstract syntax tree of the parsed document.
@@ -126,6 +151,8 @@ type Node struct {
 	ListData      // Populated if Type is List
 	CodeBlockData // Populated if Type is CodeBlock
 	LinkData      // Populated if Type is Link
+	TableData     // Populated if Type is TableData
+	TableRowData  // Populated if Type is TableRow
 	TableCellData // Populated if Type is TableCell
 
 	content []byte // Markdown content of the block nodes
@@ -224,13 +251,7 @@ func (n *Node) IsContainer() bool {
 		fallthrough
 	case Image:
 		fallthrough
-	case Table:
-		fallthrough
-	case TableHead:
-		fallthrough
-	case TableBody:
-		fallthrough
-	case TableRow:
+	case Table, TableHead, TableBody, TableRow:
 		fallthrough
 	case TableCell:
 		return true

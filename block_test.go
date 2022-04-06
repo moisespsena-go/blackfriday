@@ -1684,7 +1684,7 @@ func TestTOC(t *testing.T) {
 	t.Parallel()
 	var tests = []string{
 		"# Title\n\n##Subtitle1\n\n##Subtitle2",
-		//"<nav>\n<ul>\n<li><a href=\"#toc_0\">Title</a>\n<ul>\n<li><a href=\"#toc_1\">Subtitle1</a></li>\n<li><a href=\"#toc_2\">Subtitle2</a></li>\n</ul></li>\n</ul>\n</nav>\n\n<h1 id=\"toc_0\">Title</h1>\n\n<h2 id=\"toc_1\">Subtitle1</h2>\n\n<h2 id=\"toc_2\">Subtitle2</h2>\n",
+		// "<nav>\n<ul>\n<li><a href=\"#toc_0\">Title</a>\n<ul>\n<li><a href=\"#toc_1\">Subtitle1</a></li>\n<li><a href=\"#toc_2\">Subtitle2</a></li>\n</ul></li>\n</ul>\n</nav>\n\n<h1 id=\"toc_0\">Title</h1>\n\n<h2 id=\"toc_1\">Subtitle1</h2>\n\n<h2 id=\"toc_2\">Subtitle2</h2>\n",
 		`<nav>
 
 <ul>
@@ -1706,7 +1706,7 @@ func TestTOC(t *testing.T) {
 `,
 
 		"# Title\n\n##Subtitle\n\n#Title2",
-		//"<nav>\n<ul>\n<li><a href=\"#toc_0\">Title</a>\n<ul>\n<li><a href=\"#toc_1\">Subtitle</a></li>\n</ul></li>\n<li><a href=\"#toc_2\">Title2</a></li>\n</ul>\n</nav>\n\n<h1 id=\"toc_0\">Title</h1>\n\n<h2 id=\"toc_1\">Subtitle</h2>\n\n<h1 id=\"toc_2\">Title2</h1>\n",
+		// "<nav>\n<ul>\n<li><a href=\"#toc_0\">Title</a>\n<ul>\n<li><a href=\"#toc_1\">Subtitle</a></li>\n</ul></li>\n<li><a href=\"#toc_2\">Title2</a></li>\n</ul>\n</nav>\n\n<h1 id=\"toc_0\">Title</h1>\n\n<h2 id=\"toc_1\">Subtitle</h2>\n\n<h1 id=\"toc_2\">Title2</h1>\n",
 		`<nav>
 
 <ul>
@@ -1886,7 +1886,7 @@ func TestIsFenceLine(t *testing.T) {
 		if test.infoRequested {
 			info = new(string)
 		}
-		end, marker := isFenceLine(test.data, info, "```")
+		end, marker := isFenceLine(3, test.data, info, "```")
 		if got, want := end, test.wantEnd; got != want {
 			t.Errorf("got end %v, want %v", got, want)
 		}

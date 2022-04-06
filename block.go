@@ -15,10 +15,17 @@ package blackfriday
 
 import (
 	"bytes"
+	"encoding/csv"
+	"fmt"
 	"html"
+	"io"
+	"os"
 	"regexp"
 	"strings"
 	"unicode"
+
+	"github.com/russross/blackfriday/v2/table_header"
+	"github.com/russross/blackfriday/v2/table_header/parser"
 )
 
 const (
@@ -97,6 +104,28 @@ func (p *Markdown) block(data []byte) {
 		if p.codePrefix(data) > 0 {
 			data = data[p.code(data):]
 			continue
+		}
+
+		// fenced table block:
+		//
+		//
+		// ``````
+		// a,b,c
+		// 1,2,3
+		// 4,5,6
+		// ``````
+		//
+		// ``````{header}
+		// {a,c}
+		// a,b,c
+		// 1,2,3
+		// 4,5,6
+		// ``````
+		if p.extensions&FencedTable != 0 {
+			if i := p.fencedTableBlock(data, true); i > 0 {
+				data = data[i:]
+				continue
+			}
 		}
 
 		// fenced code block:
@@ -227,6 +256,14 @@ func (p *Markdown) prefixHeading(data []byte) int {
 		level++
 	}
 	i := skipChar(data, level, ' ')
+	var config []byte
+	if bytes.HasPrefix(data[i:], []byte(`<!--{`)) {
+		i += 5
+		end := i + bytes.Index(data[i:], []byte(`}-->`))
+		config = data[i:end]
+		i += 4 + len(config)
+		i = skipChar(data, i, ' ')
+	}
 	end := skipUntilChar(data, i, '\n')
 	skip := end
 	id := ""
@@ -263,6 +300,7 @@ func (p *Markdown) prefixHeading(data []byte) int {
 		block := p.addBlock(Heading, data[i:end])
 		block.HeadingID = id
 		block.Level = level
+		block.Config = config
 	}
 	return skip
 }
@@ -569,11 +607,11 @@ func (*Markdown) isHRule(data []byte) bool {
 // isFenceLine checks if there's a fence line (e.g., ``` or ``` go) at the beginning of data,
 // and returns the end index if so, or 0 otherwise. It also returns the marker found.
 // If info is not nil, it gets set to the syntax specified in the fence line.
-func isFenceLine(data []byte, info *string, oldmarker string) (end int, marker string) {
+func isFenceLine(limit int, data []byte, info *string, oldmarker string) (end int, marker string) {
 	i, size := 0, 0
 
 	// skip up to three spaces
-	for i < len(data) && i < 3 && data[i] == ' ' {
+	for i < len(data) && i < limit && data[i] == ' ' {
 		i++
 	}
 
@@ -594,7 +632,7 @@ func isFenceLine(data []byte, info *string, oldmarker string) (end int, marker s
 	}
 
 	// the marker char must occur at least 3 times
-	if size < 3 {
+	if size < limit {
 		return 0, ""
 	}
 	marker = string(data[i-size : i])
@@ -667,14 +705,17 @@ func isFenceLine(data []byte, info *string, oldmarker string) (end int, marker s
 // or 0 otherwise. It writes to out if doRender is true, otherwise it has no side effects.
 // If doRender is true, a final newline is mandatory to recognize the fenced code block.
 func (p *Markdown) fencedCodeBlock(data []byte, doRender bool) int {
-	var info string
-	beg, marker := isFenceLine(data, &info, "")
+	var (
+		info        string
+		beg, marker = isFenceLine(fencedCodeLimit, data, &info, "")
+	)
 	if beg == 0 || beg >= len(data) {
 		return 0
 	}
 	fenceLength := beg - 1
 
 	var work bytes.Buffer
+
 	work.Write([]byte(info))
 	work.WriteByte('\n')
 
@@ -682,7 +723,60 @@ func (p *Markdown) fencedCodeBlock(data []byte, doRender bool) int {
 		// safe to assume beg < len(data)
 
 		// check for the end of the code block
-		fenceEnd, _ := isFenceLine(data[beg:], nil, marker)
+		fenceEnd, _ := isFenceLine(fencedCodeLimit, data[beg:], nil, marker)
+		if fenceEnd != 0 {
+			beg += fenceEnd
+			break
+		}
+
+		// copy the current line
+		end := skipUntilChar(data, beg, '\n') + 1
+
+		// did we reach the end of the buffer without a closing marker?
+		if end >= len(data) {
+			return 0
+		}
+
+		// verbatim copy to the working buffer
+		if doRender {
+			work.Write(data[beg:end])
+		}
+		beg = end
+	}
+	if doRender {
+		block := p.addBlock(CodeBlock, work.Bytes()) // TODO: get rid of temp buffer
+		block.IsFenced = true
+		block.FenceLength = fenceLength
+		finalizeCodeBlock(block)
+	}
+
+	return beg
+}
+
+// fencedTableBlock returns the end index if data contains a fenced table block at the beginning,
+// or 0 otherwise. It writes to out if doRender is true, otherwise it has no side effects.
+// If doRender is true, a final newline is mandatory to recognize the fenced table block.
+func (p *Markdown) fencedTableBlock(data []byte, doRender bool) int {
+	var (
+		info        string
+		beg, marker = isFenceLine(fencedTableLimit, data, &info, "")
+		doerr       = func(msg string, args ...interface{}) {
+			p.addBlock(TableBody, nil)
+			p.addBlock(TableRow, nil).TableRowData.IsLast = true
+			p.addBlock(TableCell, []byte("[[error: "+fmt.Sprintf(msg, args...)+"]]")).TableCellData.IsLast = true
+		}
+	)
+	if beg == 0 || beg >= len(data) {
+		return 0
+	}
+
+	var work bytes.Buffer
+
+	for {
+		// safe to assume beg < len(data)
+
+		// check for the end of the code block
+		fenceEnd, _ := isFenceLine(fencedTableLimit, data[beg:], nil, marker)
 		if fenceEnd != 0 {
 			beg += fenceEnd
 			break
@@ -704,10 +798,292 @@ func (p *Markdown) fencedCodeBlock(data []byte, doRender bool) int {
 	}
 
 	if doRender {
-		block := p.addBlock(CodeBlock, work.Bytes()) // TODO: get rid of temp buffer
-		block.IsFenced = true
-		block.FenceLength = fenceLength
-		finalizeCodeBlock(block)
+		var (
+			opts    = map[string]interface{}{}
+			dataCfg = map[string]interface{}{}
+			titled  bool
+			columns []string
+			r       io.Reader = &work
+			table             = p.addBlock(Table, nil)
+		)
+
+		if len(info) > 0 {
+			if info[0] != '{' {
+				info = "{" + info + "}"
+			}
+			var (
+				fs = parser.NewFileSet()
+				p  = parser.NewParser(fs.AddFile("main", -1, len(info)), []byte(info), nil)
+
+				actual, err = p.ParseFileC(1)
+			)
+
+			if err != nil {
+				doerr("parse table header failed", err)
+				return beg
+			}
+
+			if len(actual.Stmts) > 0 {
+				switch t := actual.Stmts[0].(type) {
+				case *parser.ExprStmt:
+					switch t := t.Expr.(type) {
+					case *parser.ValuesLit:
+						opts, err = table_header.BuildMap(t)
+						if err != nil {
+							doerr("parse table options failed:%s", err)
+							return beg
+						}
+
+						var lsep, rsep, tsep, bsep, csep, rowsep bool
+						if v, ok := opts["border"]; ok {
+							if b, _ := v.(bool); b {
+								v = "A"
+							}
+							border, _ := v.(string)
+							for _, r := range []rune(border) {
+								switch r {
+								case 'l':
+									lsep = true
+								case 'r':
+									rsep = true
+								case 'R':
+									rowsep = true
+								case 'b':
+									bsep = true
+								case 't':
+									tsep = true
+								case 'c':
+									csep = true
+								case 'a':
+									lsep = true
+									rsep = true
+									tsep = true
+									bsep = true
+								case 'A':
+									lsep = true
+									rsep = true
+									tsep = true
+									bsep = true
+									csep = true
+									rowsep = true
+								}
+							}
+						}
+						table.TableData.Border = TableDataBorder{lsep, rsep, tsep, bsep, csep, rowsep}
+						table.TableData.Opts = opts
+
+					default:
+						doerr("parse table header failed: unexpected type of info statement")
+						return beg
+					}
+				default:
+					doerr("parse table header failed: unexpected type of info statement")
+					return beg
+				}
+			}
+		}
+
+		if v, ok := opts["header"]; ok {
+			ok, _ := v.(bool)
+			if ok {
+				var (
+					b  = work.Bytes()
+					fs = parser.NewFileSet()
+					ps = parser.NewParser(fs.AddFile("main", -1, len(b)), b, nil)
+
+					actual, err = ps.ParseFileC(1)
+					node        *table_header.Node
+				)
+				io.CopyN(io.Discard, &work, int64(ps.Pos())-1)
+				if err != nil {
+					doerr("parse table header failed: %s", err)
+					return beg
+				} else {
+					if len(actual.Stmts) > 0 {
+						switch t := actual.Stmts[0].(type) {
+						case *parser.ExprStmt:
+							switch t := t.Expr.(type) {
+							case *parser.ValuesLit:
+								node, err = table_header.BuildNode(t)
+							default:
+								doerr("parse table header failed: unexpected type of info statement")
+								return beg
+							}
+						default:
+							doerr("parse table header failed: unexpected type of info statement")
+							return beg
+						}
+					}
+					if node != nil {
+						header := node.TableHeader()
+						p.addBlock(TableHead, nil)
+						table.TableData.Header = &header
+
+						for _, col := range header.Leafs {
+							columns = append(columns, col.Value)
+						}
+
+						var rown *Node
+
+						for i, row := range header.Rows {
+							rown = p.addBlock(TableRow, nil)
+							rown.TableRowData.Index = i
+							var cell *Node
+							for i, col := range row {
+								cell = p.addBlock(TableCell, []byte(col.Value))
+								cell.TableCellData = TableCellData{
+									IsHeader: true,
+									Rowspan:  col.RowSpan,
+									Colspan:  col.ColSpan,
+									Opts:     col.Tags,
+									Index:    i,
+								}
+
+								if col.Tags != nil {
+									if v, ok := col.Tags["l"]; ok {
+										if b, ok := v.(bool); ok && b {
+											cell.Align = TableAlignmentLeft
+										}
+									} else if v, ok := col.Tags["c"]; ok {
+										if b, ok := v.(bool); ok && b {
+											cell.Align = TableAlignmentCenter
+										}
+									} else if v, ok := col.Tags["r"]; ok {
+										if b, ok := v.(bool); ok && b {
+											cell.Align = TableAlignmentRight
+										}
+									}
+								}
+							}
+							if cell != nil {
+								cell.TableCellData.IsLast = true
+							}
+						}
+
+						if rown != nil {
+							rown.TableRowData.IsLast = true
+						}
+					}
+				}
+			}
+		}
+		if v, ok := opts["data"]; ok {
+			if v, _ := v.(map[string]interface{}); v != nil {
+				dataCfg = v
+			}
+		}
+		if v, _ := opts["titled"]; v != nil {
+			titled, _ = v.(bool)
+		}
+		var (
+			dataType string
+		)
+		if t := dataCfg["type"]; t != nil {
+			dataType, _ = t.(string)
+		} else if dataCfg["csv"] != nil {
+			dataType = "csv"
+		}
+		if v, _ := opts["source"]; v != nil {
+			if source, _ := v.(string); source != "" {
+				source = p.pathOf(source)
+				if f, err := os.Open(source); err != nil {
+					doerr("open source file failed: (%s), at rootDir: %q, fileName: %q", err, p.rootDir, p.fileName)
+					return beg
+				} else {
+					r = f
+					defer f.Close()
+				}
+			}
+		}
+
+		switch dataType {
+		case "", "csv":
+			var (
+				r       = csv.NewReader(r)
+				getCols = func(rec []string) []string { return rec }
+			)
+			if comma, _ := dataCfg["comma"]; comma != nil {
+				if v, _ := comma.(string); v != "" {
+					r.Comma = []rune(v)[0]
+				}
+			}
+
+			if titled {
+				rec, err := r.Read()
+				if err != nil {
+					if err == io.EOF {
+						return beg
+					}
+					doerr("parse csv row failed: %s", err)
+					return beg
+				}
+
+				if len(columns) == 0 {
+					p.addBlock(TableHead, nil)
+					rown := p.addBlock(TableRow, nil)
+					rown.TableRowData.IsLast = true
+
+					var cell *Node
+					for i, col := range rec {
+						cell = p.addBlock(TableCell, []byte(col))
+						cell.IsHeader = true
+						cell.TableCellData.Index = i
+					}
+					if cell != nil {
+						cell.TableCellData.IsLast = true
+					}
+				} else {
+					cols := make([]int, len(columns))
+
+				recLoop:
+					for i, col := range rec {
+						for ix, v := range columns {
+							if v == col {
+								cols[ix] = i
+								continue recLoop
+							}
+						}
+					}
+					getCols = func(rec []string) []string {
+						newRec := make([]string, len(cols))
+						for i, c := range cols {
+							newRec[i] = rec[c]
+						}
+						return newRec
+					}
+				}
+			}
+
+			p.addBlock(TableBody, nil)
+
+			var rown *Node
+			for i := 0; ; i++ {
+				rec, err := r.Read()
+				if err != nil {
+					if err == io.EOF {
+						break
+					}
+
+					rown = p.addBlock(TableRow, nil)
+					rown.TableRowData.Index = i
+					rown.TableRowData.IsLast = true
+					p.addBlock(TableCell, []byte("[[error: parse csv row failed: "+err.Error()+"]]")).TableCellData.IsLast = true
+					return beg
+				}
+
+				rown = p.addBlock(TableRow, nil)
+				rown.TableRowData.Index = i
+				var cell *Node
+				for i, c := range getCols(rec) {
+					cell = p.addBlock(TableCell, []byte(c))
+					cell.TableCellData.Index = i
+				}
+				cell.TableCellData.IsLast = true
+			}
+			if rown != nil {
+				rown.TableRowData.IsLast = true
+			}
+		}
 	}
 
 	return beg
@@ -1302,7 +1678,7 @@ gatherlines:
 		if p.extensions&FencedCode != 0 {
 			// determine if in or out of codeblock
 			// if in codeblock, ignore normal list processing
-			_, marker := isFenceLine(chunk, nil, codeBlockMarker)
+			_, marker := isFenceLine(fencedCodeLimit, chunk, nil, codeBlockMarker)
 			if marker != "" {
 				if codeBlockMarker == "" {
 					// start of codeblock

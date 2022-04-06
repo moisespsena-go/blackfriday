@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"unicode/utf8"
 )
@@ -47,13 +48,17 @@ const (
 	AutoHeadingIDs                                // Create the heading ID from the text
 	BackslashLineBreak                            // Translate trailing backslashes into line breaks
 	DefinitionLists                               // Render definition lists
+	FencedTable                                   // Render fenced table blocks
 
 	CommonHTMLFlags HTMLFlags = UseXHTML | Smartypants |
 		SmartypantsFractions | SmartypantsDashes | SmartypantsLatexDashes
 
 	CommonExtensions Extensions = NoIntraEmphasis | Tables | FencedCode |
 		Autolink | Strikethrough | SpaceHeadings | HeadingIDs |
-		BackslashLineBreak | DefinitionLists
+		BackslashLineBreak | DefinitionLists | FencedTable
+
+	fencedCodeLimit  = 3
+	fencedTableLimit = 6
 )
 
 // ListType contains bitwise or'ed flags for list and list item objects.
@@ -179,6 +184,8 @@ type Markdown struct {
 	nesting           int
 	maxNesting        int
 	insideLink        bool
+	fileName          string
+	rootDir           string
 
 	// Footnotes need to be ordered as well as available to quickly check for
 	// presence. If a ref is also a footnote, it's stored both in refs and here
@@ -308,11 +315,28 @@ func New(opts ...Option) *Markdown {
 	if p.extensions&Footnotes != 0 {
 		p.notes = make([]*reference, 0)
 	}
+	if p.rootDir == "" {
+		p.rootDir = "."
+	}
 	return &p
 }
 
 // Option customizes the Markdown processor's default behavior.
 type Option func(*Markdown)
+
+// WithFileName allows you to set fileName.
+func WithFileName(fileName string) Option {
+	return func(p *Markdown) {
+		p.fileName = fileName
+	}
+}
+
+// WithRootDir allows you to set root directory path.
+func WithRootDir(dir string) Option {
+	return func(p *Markdown) {
+		p.rootDir = dir
+	}
+}
 
 // WithRenderer allows you to override the default renderer.
 func WithRenderer(r Renderer) Option {
@@ -393,6 +417,16 @@ func Run(input []byte, opts ...Option) []byte {
 	})
 	parser.renderer.RenderFooter(&buf, ast)
 	return buf.Bytes()
+}
+
+func (p *Markdown) pathOf(name string) string {
+	if name[0] == '/' {
+		if name[1] == '/' {
+			return name[1:]
+		}
+		return filepath.Join(p.rootDir, name)
+	}
+	return filepath.Join(filepath.Dir(filepath.Join(p.rootDir, p.fileName)), name)
 }
 
 // Parse is an entry point to the parsing part of Blackfriday. It takes an
