@@ -15,9 +15,8 @@ package blackfriday
 
 import (
 	"regexp"
-	"testing"
-
 	"strings"
+	"testing"
 )
 
 func TestEmphasis(t *testing.T) {

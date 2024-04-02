@@ -134,6 +134,10 @@ type HeadingData struct {
 	Config       []byte // Specifies whether it's a unnumerd
 }
 
+type BlockQuoteData struct {
+	Author string
+}
+
 // Node is a single element in the abstract syntax tree of the parsed document.
 // It holds connections to the structurally neighboring nodes and, for certain
 // types of nodes, additional information that might be needed when rendering.
@@ -154,6 +158,7 @@ type Node struct {
 	TableData     // Populated if Type is TableData
 	TableRowData  // Populated if Type is TableRow
 	TableCellData // Populated if Type is TableCell
+	BlockQuoteData
 
 	content []byte // Markdown content of the block nodes
 	open    bool   // Specifies an open block node that has not been finished to process yet
